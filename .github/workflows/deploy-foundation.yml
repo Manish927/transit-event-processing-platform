@@ -1,0 +1,39 @@
+name: Deploy AWS Foundation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infra/cloudformation/**'
+      - '.github/workflows/deploy-foundation.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Validate CloudFormation
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infra/cloudformation/foundation.yaml
+
+      - name: Deploy foundation
+        run: |
+          aws cloudformation deploy \
+            --stack-name transit-event-dev \
+            --template-file infra/cloudformation/foundation.yaml \
+            --parameter-overrides ProjectName=transit-event Environment=dev \
+            --no-fail-on-empty-changeset

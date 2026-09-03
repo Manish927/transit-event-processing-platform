@@ -1,0 +1,21 @@
+# Java
+**/target/
+*.class
+*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AWS / local
+.aws-sam/
+.env
+*.pem
+
+# Logs
+*.log
