@@ -1,0 +1,90 @@
+name: Deploy AWS Foundation
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+
+    paths:
+      - 'infra/cloudformation/**'
+      - '.github/workflows/deploy-foundation.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: transit-foundation-deployment
+  cancel-in-progress: false
+
+jobs:
+
+  deploy:
+
+    name: Deploy Foundation
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # -----------------------------------------------------
+      # Checkout source code
+      # -----------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # -----------------------------------------------------
+      # GitHub obtains short-lived AWS credentials
+      # using OIDC.
+      # -----------------------------------------------------
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+
+      # -----------------------------------------------------
+      # Useful security/debugging check.
+      #
+      # This should show the GitHubActionsDeploymentRole,
+      # NOT the IAM user 'manish'.
+      # -----------------------------------------------------
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+
+      # -----------------------------------------------------
+      # Validate CloudFormation syntax before deployment.
+      # -----------------------------------------------------
+
+      - name: Validate CloudFormation template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infra/cloudformation/foundation.yaml
+
+
+      # -----------------------------------------------------
+      # Deploy foundation.
+      #
+      # GitHub itself has only CloudFormation permissions.
+      # CloudFormation uses its own execution role to create
+      # SQS, S3, DynamoDB, SNS, CloudWatch, etc.
+      # -----------------------------------------------------
+
+      - name: Deploy AWS foundation
+        run: |
+          aws cloudformation deploy \
+            --stack-name transit-event-dev \
+            --template-file infra/cloudformation/foundation.yaml \
+            --parameter-overrides \
+              ProjectName=transit-event \
+              Environment=dev \
+            --role-arn "${{ vars.CFN_EXECUTION_ROLE_ARN }}" \
+            --no-fail-on-empty-changeset

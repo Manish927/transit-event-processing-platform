@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Bootstrap GitHub Actions OIDC authentication for the
+  Transit Event Processing Platform.
+
+Parameters:
+
+  GitHubOwner:
+    Type: String
+    Description: GitHub repository owner
+
+  GitHubOwnerId:
+    Type: String
+    Description: Immutable GitHub owner ID
+
+  GitHubRepository:
+    Type: String
+    Description: GitHub repository name
+
+  GitHubRepositoryId:
+    Type: String
+    Description: Immutable GitHub repository ID
+
+  DeploymentBranch:
+    Type: String
+    Default: main
+    Description: Branch permitted to deploy into AWS
+
+
+Resources:
+
+  # ---------------------------------------------------------
+  # GitHub OIDC Provider
+  # ---------------------------------------------------------
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+
+      ClientIdList:
+        - sts.amazonaws.com
+
+
+  # ---------------------------------------------------------
+  # CloudFormation Execution Role
+  #
+  # GitHub does NOT get these permissions directly.
+  # CloudFormation assumes this role while deploying resources.
+  # ---------------------------------------------------------
+
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      Policies:
+
+        - PolicyName: TransitFoundationDeploymentPolicy
+
+          PolicyDocument:
+
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Effect: Allow
+
+                Action:
+
+                  # S3
+                  - s3:*
+
+                  # SQS
+                  - sqs:*
+
+                  # DynamoDB
+                  - dynamodb:*
+
+                  # SNS
+                  - sns:*
+
+                  # CloudWatch
+                  - cloudwatch:*
+
+                  # CloudWatch Logs
+                  - logs:*
+
+                Resource: "*"
+
+
+  # ---------------------------------------------------------
+  # GitHub Actions Deployment Role
+  #
+  # GitHub obtains temporary credentials through OIDC.
+  #
+  # ONLY:
+  #
+  #   Manish927
+  #   transit-event-processing-platform
+  #   main branch
+  #
+  # can assume this role.
+  # ---------------------------------------------------------
+
+  GitHubActionsDeploymentRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      AssumeRolePolicyDocument:
+
+        Version: '2012-10-17'
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+
+            Condition:
+
+              StringEquals:
+
+                token.actions.githubusercontent.com:aud:
+                  sts.amazonaws.com
+
+                token.actions.githubusercontent.com:sub:
+                  !Sub >
+                    repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:ref:refs/heads/${DeploymentBranch}
+
+      Policies:
+
+        - PolicyName: GitHubCloudFormationDeploymentPolicy
+
+          PolicyDocument:
+
+            Version: '2012-10-17'
+
+            Statement:
+
+              # Allow GitHub Actions to operate CloudFormation
+              - Effect: Allow
+
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:ListStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+
+                Resource: "*"
+
+              # GitHub may tell CloudFormation to use ONLY
+              # our CloudFormation execution role.
+              - Effect: Allow
+
+                Action:
+                  - iam:PassRole
+
+                Resource:
+                  - !GetAtt CloudFormationExecutionRole.Arn
+
+
+Outputs:
+
+  GitHubOidcProviderArn:
+    Description: GitHub Actions OIDC provider ARN
+    Value: !Ref GitHubOidcProvider
+
+
+  GitHubDeploymentRoleArn:
+    Description: IAM role that GitHub Actions will assume
+    Value: !GetAtt GitHubActionsDeploymentRole.Arn
+
+
+  CloudFormationExecutionRoleArn:
+    Description: IAM role used by CloudFormation
+    Value: !GetAtt CloudFormationExecutionRole.Arn
