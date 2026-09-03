@@ -143,9 +143,7 @@ Resources:
                 token.actions.githubusercontent.com:aud:
                   sts.amazonaws.com
 
-                token.actions.githubusercontent.com:sub:
-                  !Sub >
-                    repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:ref:refs/heads/${DeploymentBranch}
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepository}@${GitHubRepositoryId}:ref:refs/heads/${DeploymentBranch}"
 
       Policies:
 
