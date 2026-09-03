@@ -1,0 +1,15 @@
+{
+  "header": {
+    "eventId": "0199a7b9-bc31-7621-a989-b69bf50f76d2",
+    "eventType": "DEVICE_HEARTBEAT_REPORTED",
+    "schemaVersion": "1.0",
+    "sequenceNumber": 928772,
+    "occurredAt": "2026-09-03T11:42:30Z",
+    "publishedAt": "2026-09-03T11:42:30.025Z",
+    "producer": {"producerType":"DEVICE","producerId":"GATE-LON-143-02","producerInstanceId":"BOOT-991827"},
+    "agencyId": "AGENCY-001",
+    "correlationId": "0199a7b9-bc31-7621-a989-b69bf50f76d2",
+    "causationId": null
+  },
+  "data": {"uptimeSeconds":438220,"counters":{"totalTaps":8412987,"acceptedTaps":8291832,"rejectedTaps":121155,"gateCycles":8110274,"readerErrors":27,"motorErrors":2,"communicationErrors":14},"health":{"cpuUtilizationPct":38.7,"memoryUtilizationPct":61.2,"cpuTemperatureC":53.4,"motorTemperatureC":47.1,"supplyVoltage":23.9},"network":{"connected":true,"latencyMs":34},"status":"HEALTHY"}
+}
