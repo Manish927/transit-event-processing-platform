@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SQS-driven Java event processor Lambda for Transit Event Processing Platform.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: transit-event
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  EventQueueArn:
+    Type: String
+  IdempotencyTableName:
+    Type: String
+  ArtifactBucket:
+    Type: String
+  ArtifactKey:
+    Type: String
+  MaximumConcurrency:
+    Type: Number
+    Default: 5
+    MinValue: 2
+    MaxValue: 1000
+
+Resources:
+  EventProcessorExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-event-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: event-processor-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WriteLambdaLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${Environment}-event-processor:*
+              - Sid: ConsumeIngressQueue
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !Ref EventQueueArn
+              - Sid: ClaimEventIdempotency
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${IdempotencyTableName}
+
+  EventProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ProjectName}-${Environment}-event-processor
+      RetentionInDays: 7
+
+  EventProcessorLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - EventProcessorLogGroup
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-event-processor
+      Runtime: java21
+      Handler: com.transit.ticketing.processor.EventProcessorLambdaHandler::handleRequest
+      Architectures:
+        - x86_64
+      MemorySize: 512
+      Timeout: 15
+      Role: !GetAtt EventProcessorExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref ArtifactKey
+      Environment:
+        Variables:
+          IDEMPOTENCY_TABLE_NAME: !Ref IdempotencyTableName
+
+  EventQueueMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !Ref EventQueueArn
+      FunctionName: !Ref EventProcessorLambda
+      Enabled: true
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 1
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      ScalingConfig:
+        MaximumConcurrency: !Ref MaximumConcurrency
+
+Outputs:
+  EventProcessorLambdaName:
+    Value: !Ref EventProcessorLambda
+  EventProcessorLambdaArn:
+    Value: !GetAtt EventProcessorLambda.Arn
+  EventQueueMappingId:
+    Value: !Ref EventQueueMapping
