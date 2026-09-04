@@ -2,7 +2,10 @@ package com.transit.ticketing.simulator;
 
 import com.transit.ticketing.contracts.EventEnvelope;
 import com.transit.ticketing.contracts.device.DeviceHeartbeatReportedData;
+import com.transit.ticketing.contracts.tap.TapAcceptedData;
 import com.transit.ticketing.contracts.tap.TapReceivedData;
+import com.transit.ticketing.contracts.tap.TapRejectedData;
+import com.transit.ticketing.contracts.tap.TapRejectionReason;
 import com.transit.ticketing.contracts.tap.TapType;
 import com.transit.ticketing.simulator.config.SimulatorProperties;
 import com.transit.ticketing.simulator.dataset.TransitDatasetLoader;
@@ -10,6 +13,7 @@ import com.transit.ticketing.simulator.dataset.TransitRecord;
 import com.transit.ticketing.simulator.device.DeviceRegistry;
 import com.transit.ticketing.simulator.device.SimulatedDevice;
 import com.transit.ticketing.simulator.generator.HeartbeatEventGenerator;
+import com.transit.ticketing.simulator.generator.TapDecisionEventGenerator;
 import com.transit.ticketing.simulator.generator.TapEventGenerator;
 import com.transit.ticketing.simulator.publisher.ConsoleEventPublisher;
 import com.transit.ticketing.simulator.publisher.EventPublisher;
@@ -35,7 +39,11 @@ public final class DeviceSimulatorApplication {
                         properties.agencyId());
 
         TapEventGenerator tapGenerator = new TapEventGenerator();
-        HeartbeatEventGenerator heartbeatGenerator = new HeartbeatEventGenerator();
+        TapDecisionEventGenerator decisionGenerator =
+                new TapDecisionEventGenerator();
+        HeartbeatEventGenerator heartbeatGenerator =
+                new HeartbeatEventGenerator();
+
         EventPublisher publisher = new ConsoleEventPublisher();
         Random random = new Random();
 
@@ -49,32 +57,77 @@ public final class DeviceSimulatorApplication {
 
         for (int i = 0; i < properties.totalTaps(); i++) {
             SimulatedDevice device = devices.get(i % devices.size());
-            TransitRecord transitRecord = transitRecords.get(i % transitRecords.size());
+            TransitRecord transitRecord =
+                    transitRecords.get(i % transitRecords.size());
 
-            int passengerNumber = (i % properties.passengerCount()) + 1;
-            String credentialToken = "TOKEN-%08d".formatted(passengerNumber);
+            int passengerNumber =
+                    (i % properties.passengerCount()) + 1;
 
-            long passengerCycle = i / properties.passengerCount();
+            String credentialToken =
+                    "TOKEN-%08d".formatted(passengerNumber);
+
+            long passengerCycle =
+                    i / properties.passengerCount();
+
             TapType tapType = (passengerCycle % 2 == 0)
                     ? TapType.TAP_IN
                     : TapType.TAP_OUT;
 
-            EventEnvelope<TapReceivedData> tapEvent = tapGenerator.generate(
-                    device,
-                    transitRecord,
-                    credentialToken,
-                    tapType);
+            /*
+             * 1. Device observes the physical tap.
+             */
+            EventEnvelope<TapReceivedData> tapEvent =
+                    tapGenerator.generate(
+                            device,
+                            transitRecord,
+                            credentialToken,
+                            tapType);
 
             publisher.publish(tapEvent);
 
-            boolean locallyAccepted = random.nextDouble() >= properties.rejectionRate();
+            /*
+             * 2. Device makes the local access decision.
+             *    The simulator uses rejection-rate only to exercise
+             *    both branches. Real validation rules will be added
+             *    separately from this transport/event simulation.
+             */
+            boolean locallyAccepted =
+                    random.nextDouble()
+                            >= properties.rejectionRate();
+
+            if (locallyAccepted) {
+                EventEnvelope<TapAcceptedData> acceptedEvent =
+                        decisionGenerator.generateAccepted(
+                                device,
+                                tapEvent);
+
+                publisher.publish(acceptedEvent);
+            } else {
+                TapRejectionReason rejectionReason =
+                        randomRejectionReason(random);
+
+                EventEnvelope<TapRejectedData> rejectedEvent =
+                        decisionGenerator.generateRejected(
+                                device,
+                                tapEvent,
+                                rejectionReason);
+
+                publisher.publish(rejectedEvent);
+            }
+
+            /*
+             * Counters represent completed access decisions.
+             */
             device.state().recordTap(locallyAccepted);
 
             maybeInjectSyntheticError(device, random);
 
-            if (device.state().totalTaps() % properties.heartbeatEveryTaps() == 0) {
+            if (device.state().totalTaps()
+                    % properties.heartbeatEveryTaps() == 0) {
+
                 EventEnvelope<DeviceHeartbeatReportedData> heartbeat =
                         heartbeatGenerator.generate(device);
+
                 publisher.publish(heartbeat);
             }
 
@@ -83,12 +136,32 @@ public final class DeviceSimulatorApplication {
             }
         }
 
-        // Emit a final heartbeat for every device so the last counters are observable.
+        /*
+         * Emit a final heartbeat for every device so the last
+         * counters are observable.
+         */
         for (SimulatedDevice device : devices) {
-            publisher.publish(heartbeatGenerator.generate(device));
+            publisher.publish(
+                    heartbeatGenerator.generate(device));
         }
 
         System.err.println("Simulation complete.");
+    }
+
+    private static TapRejectionReason randomRejectionReason(
+            Random random) {
+
+        TapRejectionReason[] simulatedReasons = {
+                TapRejectionReason.MEDIA_BLOCKED,
+                TapRejectionReason.MEDIA_EXPIRED,
+                TapRejectionReason.INVALID_MEDIA,
+                TapRejectionReason.INSUFFICIENT_BALANCE,
+                TapRejectionReason.ACCOUNT_SUSPENDED,
+                TapRejectionReason.DUPLICATE_TAP
+        };
+
+        return simulatedReasons[
+                random.nextInt(simulatedReasons.length)];
     }
 
     private static void maybeInjectSyntheticError(
