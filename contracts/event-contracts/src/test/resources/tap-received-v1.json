@@ -1,0 +1,15 @@
+{
+  "header": {
+    "eventId": "0199a7b8-44ad-7c91-9bc3-92fd227d8741",
+    "eventType": "TAP_RECEIVED",
+    "schemaVersion": "1.0",
+    "sequenceNumber": 928771,
+    "occurredAt": "2026-09-03T11:42:15.123Z",
+    "publishedAt": "2026-09-03T11:42:15.180Z",
+    "producer": {"producerType":"DEVICE","producerId":"GATE-LON-143-02","producerInstanceId":"BOOT-991827"},
+    "agencyId": "AGENCY-001",
+    "correlationId": "0199a7b8-44ad-7c91-9bc3-92fd227d8741",
+    "causationId": null
+  },
+  "data": {"credentialToken":"TOKEN-884721","mediaType":"TRANSIT_CARD","tapType":"TAP_IN","stopId":"STOP-143","routeId":"ROUTE-27","tripId":"TRIP-8823","vehicleId":"VEHICLE-192","stopSequence":17}
+}
