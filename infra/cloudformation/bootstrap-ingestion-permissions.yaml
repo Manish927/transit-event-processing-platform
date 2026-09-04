@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  One-time permission extension for the existing GitHub OIDC deployment role
+  and CloudFormation execution role so the ingestion Lambda pipeline can deploy.
+
+Parameters:
+  GitHubDeploymentRoleName:
+    Type: String
+  CloudFormationExecutionRoleName:
+    Type: String
+  ProjectName:
+    Type: String
+    Default: transit-event
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+
+Resources:
+  GitHubArtifactUploadPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Roles:
+        - !Ref GitHubDeploymentRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadArtifactBucket
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource: !Sub arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts
+          - Sid: UploadArtifacts
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:AbortMultipartUpload
+            Resource: !Sub arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/*
+
+  CloudFormationIngestionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Roles:
+        - !Ref CloudFormationExecutionRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ManageTransitLambdaFunctions
+            Effect: Allow
+            Action:
+              - lambda:CreateFunction
+              - lambda:DeleteFunction
+              - lambda:GetFunction
+              - lambda:GetFunctionConfiguration
+              - lambda:UpdateFunctionCode
+              - lambda:UpdateFunctionConfiguration
+              - lambda:TagResource
+              - lambda:UntagResource
+            Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-${Environment}-*
+
+          - Sid: ManageTransitLambdaRoles
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:GetRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:TagRole
+              - iam:UntagRole
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectName}-${Environment}-*
+
+          - Sid: PassTransitLambdaRoles
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ProjectName}-${Environment}-*
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com

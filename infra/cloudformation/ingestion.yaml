@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Java ingestion Lambda for Transit Event Processing Platform.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: transit-event
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  EventQueueUrl:
+    Type: String
+  EventQueueArn:
+    Type: String
+  ArtifactBucket:
+    Type: String
+  ArtifactKey:
+    Type: String
+
+Resources:
+  IngestionLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-${Environment}-ingestion-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ingestion-lambda-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WriteLambdaLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${Environment}-ingestion:*
+              - Sid: PublishToEventQueue
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !Ref EventQueueArn
+
+  IngestionLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ProjectName}-${Environment}-ingestion
+      RetentionInDays: 7
+
+  IngestionLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - IngestionLambdaLogGroup
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-ingestion
+      Runtime: java21
+      Handler: com.transit.ticketing.ingestion.IngestionLambdaHandler::handleRequest
+      Architectures:
+        - x86_64
+      MemorySize: 512
+      Timeout: 10
+      Role: !GetAtt IngestionLambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref ArtifactKey
+      Environment:
+        Variables:
+          EVENT_QUEUE_URL: !Ref EventQueueUrl
+
+Outputs:
+  IngestionLambdaName:
+    Value: !Ref IngestionLambda
+  IngestionLambdaArn:
+    Value: !GetAtt IngestionLambda.Arn

@@ -1,0 +1,28 @@
+{
+  "header": {
+    "eventId": "EVENT-1",
+    "eventType": "TAP_RECEIVED",
+    "schemaVersion": "1.0",
+    "sequenceNumber": 1,
+    "occurredAt": "2026-09-04T05:00:00Z",
+    "publishedAt": "2026-09-04T05:00:00Z",
+    "producer": {
+      "producerType": "DEVICE",
+      "producerId": "DEVICE-001",
+      "producerInstanceId": "BOOT-001"
+    },
+    "agencyId": "AGENCY-001",
+    "correlationId": "CORR-001",
+    "causationId": null
+  },
+  "data": {
+    "credentialToken": "TOKEN-0001",
+    "mediaType": "TRANSIT_CARD",
+    "tapType": "TAP_IN",
+    "stopId": "STOP-143",
+    "routeId": "ROUTE-27",
+    "tripId": "TRIP-8823",
+    "vehicleId": "VEHICLE-192",
+    "stopSequence": 17
+  }
+}
