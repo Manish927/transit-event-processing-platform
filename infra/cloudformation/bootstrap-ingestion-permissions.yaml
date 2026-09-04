@@ -1,20 +1,26 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   One-time permission extension for the existing GitHub OIDC deployment role
-  and CloudFormation execution role so the ingestion Lambda pipeline can deploy.
+  and CloudFormation execution role so transit Lambda pipelines can deploy.
 
 Parameters:
   GitHubDeploymentRoleName:
     Type: String
+
   CloudFormationExecutionRoleName:
     Type: String
+
   ProjectName:
     Type: String
     Default: transit-event
+
   Environment:
     Type: String
     Default: dev
-    AllowedValues: [dev, test, prod]
+    AllowedValues:
+      - dev
+      - test
+      - prod
 
 Resources:
   GitHubArtifactUploadPolicy:
@@ -31,6 +37,7 @@ Resources:
               - s3:GetBucketLocation
               - s3:ListBucket
             Resource: !Sub arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts
+
           - Sid: UploadArtifacts
             Effect: Allow
             Action:
@@ -58,6 +65,16 @@ Resources:
               - lambda:TagResource
               - lambda:UntagResource
             Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProjectName}-${Environment}-*
+
+          - Sid: ManageTransitEventSourceMappings
+            Effect: Allow
+            Action:
+              - lambda:CreateEventSourceMapping
+              - lambda:DeleteEventSourceMapping
+              - lambda:GetEventSourceMapping
+              - lambda:ListEventSourceMappings
+              - lambda:UpdateEventSourceMapping
+            Resource: '*'
 
           - Sid: ManageTransitLambdaRoles
             Effect: Allow
