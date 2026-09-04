@@ -81,25 +81,55 @@ jobs:
 
       - name: Resolve event queue
         run: |
-          QUEUE_ID=$(aws cloudformation describe-stack-resource             --stack-name "${FOUNDATION_STACK}"             --logical-resource-id EventQueue             --query "StackResourceDetail.PhysicalResourceId"             --output text)
+          EVENT_QUEUE_URL=$(aws cloudformation describe-stacks \
+            --stack-name "${FOUNDATION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='EventQueueUrl'].OutputValue | [0]" \
+            --output text)
 
-          if [[ "${QUEUE_ID}" == https://* ]]; then
-            EVENT_QUEUE_URL="${QUEUE_ID}"
-          else
-            EVENT_QUEUE_URL=$(aws sqs get-queue-url               --queue-name "${QUEUE_ID}"               --query "QueueUrl"               --output text)
+          EVENT_QUEUE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "${FOUNDATION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='EventQueueArn'].OutputValue | [0]" \
+            --output text)
+
+          if [ -z "${EVENT_QUEUE_URL}" ] || [ "${EVENT_QUEUE_URL}" = "None" ]; then
+            echo "Unable to resolve EventQueueUrl from ${FOUNDATION_STACK}."
+            exit 1
           fi
 
-          EVENT_QUEUE_ARN=$(aws sqs get-queue-attributes             --queue-url "${EVENT_QUEUE_URL}"             --attribute-names QueueArn             --query "Attributes.QueueArn"             --output text)
+          if [ -z "${EVENT_QUEUE_ARN}" ] || [ "${EVENT_QUEUE_ARN}" = "None" ]; then
+            echo "Unable to resolve EventQueueArn from ${FOUNDATION_STACK}."
+            exit 1
+          fi
 
           echo "EVENT_QUEUE_URL=${EVENT_QUEUE_URL}" >> "${GITHUB_ENV}"
           echo "EVENT_QUEUE_ARN=${EVENT_QUEUE_ARN}" >> "${GITHUB_ENV}"
+          echo "Resolved EventQueueUrl and EventQueueArn from CloudFormation outputs."
 
       - name: Deploy ingestion Lambda
         run: |
           aws cloudformation deploy             --stack-name "${INGESTION_STACK}"             --template-file infra/cloudformation/ingestion.yaml             --parameter-overrides               ProjectName="${PROJECT_NAME}"               Environment="${ENVIRONMENT}"               EventQueueUrl="${EVENT_QUEUE_URL}"               EventQueueArn="${EVENT_QUEUE_ARN}"               ArtifactBucket="${ARTIFACT_BUCKET}"               ArtifactKey="${ARTIFACT_KEY}"             --capabilities CAPABILITY_NAMED_IAM             --role-arn "${{ vars.CFN_EXECUTION_ROLE_ARN }}"             --no-fail-on-empty-changeset
 
-      - name: Verify deployed Lambda
+      - name: Verify deployed ingestion stack
         run: |
-          FUNCTION_NAME=$(aws cloudformation describe-stacks             --stack-name "${INGESTION_STACK}"             --query "Stacks[0].Outputs[?OutputKey=='IngestionLambdaName'].OutputValue | [0]"             --output text)
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${INGESTION_STACK}" \
+            --query "Stacks[0].StackStatus" \
+            --output text)
 
-          aws lambda get-function-configuration             --function-name "${FUNCTION_NAME}"             --query "{FunctionName:FunctionName,Runtime:Runtime,Handler:Handler,State:State,LastUpdateStatus:LastUpdateStatus}"             --output table
+          FUNCTION_NAME=$(aws cloudformation describe-stacks \
+            --stack-name "${INGESTION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='IngestionLambdaName'].OutputValue | [0]" \
+            --output text)
+
+          if [ "${STACK_STATUS}" != "CREATE_COMPLETE" ] && [ "${STACK_STATUS}" != "UPDATE_COMPLETE" ]; then
+            echo "Unexpected ingestion stack status: ${STACK_STATUS}"
+            exit 1
+          fi
+
+          if [ -z "${FUNCTION_NAME}" ] || [ "${FUNCTION_NAME}" = "None" ]; then
+            echo "Unable to resolve IngestionLambdaName."
+            exit 1
+          fi
+
+          echo "Ingestion stack status: ${STACK_STATUS}"
+          echo "Ingestion Lambda: ${FUNCTION_NAME}"
