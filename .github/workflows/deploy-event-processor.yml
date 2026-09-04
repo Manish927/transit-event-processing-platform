@@ -1,0 +1,111 @@
+name: Deploy Event Processor Lambda
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'contracts/event-contracts/**'
+      - 'services/event-processor-lambda/**'
+      - 'infra/cloudformation/event-processor.yaml'
+      - '.github/workflows/deploy-event-processor.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: transit-event-processor-deployment
+  cancel-in-progress: false
+
+env:
+  FOUNDATION_STACK: transit-event-dev
+  ARTIFACT_STACK: transit-event-dev-deployment-artifacts
+  PROCESSOR_STACK: transit-event-dev-event-processor
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build shared contracts
+        run: mvn --file contracts/event-contracts/pom.xml --batch-mode clean install
+
+      - name: Build event processor
+        run: |
+          mvn --file services/event-processor-lambda/pom.xml --batch-mode clean package
+          test -f services/event-processor-lambda/target/event-processor-lambda.jar
+
+      - name: Resolve existing stack outputs
+        run: |
+          ARTIFACT_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "${ARTIFACT_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='DeploymentArtifactBucketName'].OutputValue | [0]" \
+            --output text)
+
+          EVENT_QUEUE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "${FOUNDATION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='EventQueueArn'].OutputValue | [0]" \
+            --output text)
+
+          IDEMPOTENCY_TABLE_NAME=$(aws cloudformation describe-stacks \
+            --stack-name "${FOUNDATION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='IdempotencyTableName'].OutputValue | [0]" \
+            --output text)
+
+          echo "ARTIFACT_BUCKET=${ARTIFACT_BUCKET}" >> "${GITHUB_ENV}"
+          echo "EVENT_QUEUE_ARN=${EVENT_QUEUE_ARN}" >> "${GITHUB_ENV}"
+          echo "IDEMPOTENCY_TABLE_NAME=${IDEMPOTENCY_TABLE_NAME}" >> "${GITHUB_ENV}"
+
+      - name: Upload versioned artifact
+        run: |
+          ARTIFACT_KEY="event-processor-lambda/${GITHUB_SHA}/event-processor-lambda.jar"
+          aws s3 cp \
+            services/event-processor-lambda/target/event-processor-lambda.jar \
+            "s3://${ARTIFACT_BUCKET}/${ARTIFACT_KEY}"
+          echo "ARTIFACT_KEY=${ARTIFACT_KEY}" >> "${GITHUB_ENV}"
+
+      - name: Validate template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infra/cloudformation/event-processor.yaml
+
+      - name: Deploy event processor
+        run: |
+          aws cloudformation deploy \
+            --stack-name "${PROCESSOR_STACK}" \
+            --template-file infra/cloudformation/event-processor.yaml \
+            --parameter-overrides \
+              ProjectName=transit-event \
+              Environment=dev \
+              EventQueueArn="${EVENT_QUEUE_ARN}" \
+              IdempotencyTableName="${IDEMPOTENCY_TABLE_NAME}" \
+              ArtifactBucket="${ARTIFACT_BUCKET}" \
+              ArtifactKey="${ARTIFACT_KEY}" \
+              MaximumConcurrency=5 \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --role-arn "${{ vars.CFN_EXECUTION_ROLE_ARN }}" \
+            --no-fail-on-empty-changeset
+
+      - name: Verify stack
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "${PROCESSOR_STACK}" \
+            --query "Stacks[0].{Status:StackStatus,Processor:Outputs[?OutputKey=='EventProcessorLambdaName'].OutputValue | [0]}" \
+            --output table
