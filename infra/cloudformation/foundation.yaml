@@ -63,6 +63,32 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  DeviceEventDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  DeviceEventQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeviceEventDeadLetterQueue.Arn
+        maxReceiveCount: 5
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
   IdempotencyTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -118,6 +144,18 @@ Outputs:
     Value: !GetAtt EventQueue.Arn
   EventDeadLetterQueueUrl:
     Value: !Ref EventDeadLetterQueue
+  DeviceEventQueueUrl:
+    Description: URL of the device event SQS queue
+    Value: !Ref DeviceEventQueue
+  DeviceEventQueueArn:
+    Description: ARN of the device event SQS queue
+    Value: !GetAtt DeviceEventQueue.Arn
+  DeviceEventDeadLetterQueueUrl:
+    Description: URL of the device event dead-letter queue
+    Value: !Ref DeviceEventDeadLetterQueue
+  DeviceEventDeadLetterQueueArn:
+    Description: ARN of the device event dead-letter queue
+    Value: !GetAtt DeviceEventDeadLetterQueue.Arn
   IdempotencyTableName:
     Value: !Ref IdempotencyTable
   EventNotificationTopicArn:
