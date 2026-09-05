@@ -2,7 +2,7 @@
 
 A hands-on Java 21 / AWS reference platform for high-volume public-transit fare and device-event ingestion, asynchronous processing, idempotency, backpressure, queue isolation, transactional processing, and later stream analytics with Kinesis and Apache Flink.
 
-The project is being built incrementally as a production-style architecture and interview reference implementation.
+The project is being built incrementally as a production-style, resilient event-processing architecture.
 
 ---
 
@@ -200,6 +200,265 @@ Message distribution is managed by SQS and the Lambda Event Source Mapping. The 
 Current development configuration uses bounded concurrency to protect downstream DynamoDB capacity.
 
 For independent business consumers that each need their own copy of an event, separate queues or a fan-out/streaming mechanism will be used rather than attaching unrelated consumers to the same SQS queue.
+
+---
+
+## Reliability and resilience KPIs
+
+Reliability is measured at the service and pipeline level rather than by individual Lambda execution environments. Lambda execution environments are ephemeral and replaceable, so the key concern is whether the fare-processing service continues to meet its operational objectives and how quickly it recovers when it does not.
+
+### Core reliability KPIs
+
+| KPI | Definition | Why it matters |
+| --- | --- | --- |
+| **Availability** | Percentage of time the fare-processing pipeline meets its service objective | Measures overall service reliability |
+| **MTBF** | Mean time between service-impacting technical incidents | Shows how frequently meaningful failures occur |
+| **MTTR** | Mean time from incident start until normal processing is restored | Measures recovery effectiveness |
+| **Technical error rate** | Failed technical processing attempts / total processing attempts | Separates platform failures from valid business rejections |
+| **Queue backlog** | Approximate number of visible fare events waiting in SQS | Shows whether processing capacity is keeping up with arrival rate |
+| **Age of oldest message** | Age of the oldest unprocessed fare event in SQS | Primary indicator that the consumer is falling behind |
+| **DLQ rate** | Messages that exhaust retries and reach the dead-letter queue | Identifies poison messages and unrecoverable processing failures |
+| **Lambda throttling** | Number or rate of throttled Lambda invocations | Indicates insufficient or constrained compute concurrency |
+| **DynamoDB throttling** | Number or rate of throttled DynamoDB operations | Detects downstream capacity pressure |
+| **Processing latency** | Time from event publication to successful processing | Measures end-to-end processing responsiveness |
+| **Backlog drain time** | Time required after recovery to return the queue to its normal operating depth | Quantifies recovery capacity after an incident |
+
+Business outcomes such as `INVALID_MEDIA`, `INSUFFICIENT_BALANCE`, or another valid `TAP_REJECTED` decision are not counted as technical platform failures.
+
+### MTBF
+
+For this platform, MTBF is measured between service-impacting technical incidents rather than between individual Lambda invocation failures.
+
+```text
+Incident A
+    |
+    |------ healthy operating period ------|
+                                           |
+                                      Incident B
+```
+
+Conceptually:
+
+```text
+MTBF =
+    total healthy operating time
+    ----------------------------
+    number of service-impacting incidents
+```
+
+Examples of incidents that can affect MTBF include:
+
+- failed deployments
+- persistent Lambda processing failures
+- sustained DynamoDB throttling
+- dependency outages
+- queue-processing stalls
+- infrastructure or configuration failures that cause the service objective to be missed
+
+Malformed events and valid business rejections are tracked separately.
+
+### MTTR
+
+MTTR measures how long the processing pipeline takes to return to normal operation after a service-impacting incident.
+
+```text
+Incident starts
+      |
+      v
+Processing capacity falls
+      |
+      v
+SQS absorbs incoming traffic
+      |
+      v
+Failure is detected
+      |
+      v
+Service or dependency recovers
+      |
+      v
+Lambda resumes processing
+      |
+      v
+Backlog drains
+      |
+      v
+Normal queue depth restored
+```
+
+Conceptually:
+
+```text
+MTTR =
+    total service recovery time
+    ---------------------------
+    number of recovered incidents
+```
+
+For an asynchronous SQS-based workload, recovery is not complete merely because Lambda begins succeeding again. Recovery is complete when the backlog and message age return to the normal operating range.
+
+### Reliability metrics versus scaling signals
+
+MTBF and MTTR define reliability and recovery performance. They are not direct autoscaling inputs.
+
+```text
+MTBF / MTTR
+      |
+      v
+Reliability targets
+Recovery design
+Capacity planning
+
+
+Queue depth
+Age of oldest message
+Arrival rate
+Lambda duration
+Lambda throttles
+DynamoDB throttles
+      |
+      v
+Runtime scaling and concurrency decisions
+```
+
+The Lambda Event Source Mapping automatically scales consumers with available SQS work. `MaximumConcurrency` provides a control boundary so recovery traffic cannot overwhelm downstream DynamoDB capacity.
+
+### Backlog and recovery capacity
+
+If processing is unavailable for a period, SQS accumulates the incoming events:
+
+```text
+Approximate backlog accumulated
+    = event arrival rate x outage duration
+```
+
+After recovery, processing capacity must handle both:
+
+```text
+new incoming events
+        +
+existing backlog
+```
+
+The consumer therefore needs enough controlled burst capacity to reduce queue age and backlog while staying within downstream capacity limits.
+
+Unbounded Lambda scale-out can make recovery worse:
+
+```text
+Large SQS backlog
+      |
+      v
+Too many concurrent Lambdas
+      |
+      v
+DynamoDB throttling
+      |
+      v
+Retries
+      |
+      v
+Higher queue age
+      |
+      v
+Longer MTTR
+```
+
+The platform instead uses bounded concurrency and backpressure:
+
+```text
+API Gateway
+      |
+      v
+SQS
+      |  durable backpressure
+      v
+Lambda Event Source Mapping
+      |
+      |  bounded MaximumConcurrency
+      v
+Event Processor Lambda
+      |
+      v
+DynamoDB
+```
+
+### Failure handling and recovery mechanisms
+
+The current and planned resilience mechanisms include:
+
+- SQS as the durable backpressure boundary
+- separate fare and device queues for workload isolation
+- Lambda Event Source Mapping for managed polling and scale-out
+- bounded Lambda concurrency to protect downstream services
+- idempotent processing using DynamoDB conditional writes
+- partial batch failure reporting so only failed SQS messages are retried
+- dead-letter queues for messages that exhaust retries
+- CloudWatch logs and API Gateway access logs for operational diagnosis
+- structured trace identifiers such as `eventId`, `correlationId`, SQS message ID, API request ID, and Lambda request ID
+- DynamoDB optimistic concurrency and transactions for future account and ledger updates
+
+### Operational signals to monitor
+
+The primary CloudWatch signals for fare processing are:
+
+```text
+SQS
+  ApproximateNumberOfMessagesVisible
+  ApproximateAgeOfOldestMessage
+  NumberOfMessagesSent
+  NumberOfMessagesReceived
+  DLQ message count
+
+Lambda
+  Invocations
+  Errors
+  Duration
+  ConcurrentExecutions
+  Throttles
+
+DynamoDB
+  ReadThrottleEvents
+  WriteThrottleEvents
+  ConsumedReadCapacityUnits
+  ConsumedWriteCapacityUnits
+
+API Gateway
+  request count
+  4xx
+  5xx
+  integration latency
+```
+
+These metrics will later be combined into alarms and operational dashboards.
+
+### Reliability model
+
+```text
+                           CloudWatch
+                               ^
+                               |
+             +-----------------+-----------------+
+             |                 |                 |
+          SQS metrics       Lambda metrics    DynamoDB metrics
+             |                 |                 |
+             +-----------------+-----------------+
+                               |
+                               v
+                       Reliability signals
+                               |
+              +----------------+----------------+
+              |                                 |
+              v                                 v
+        Scaling decisions                Incident detection
+              |                                 |
+              v                                 v
+      bounded concurrency               recovery / remediation
+                                                |
+                                                v
+                                         MTTR measurement
+```
+
+For physical transit components such as readers, motors, or replaceable sensors, **MTTF** can be tracked separately from service MTBF/MTTR using device lifecycle and fault events.
 
 ---
 
@@ -553,6 +812,7 @@ The goal is to build a realistic, scalable public-transit event-processing platf
 - idempotent processing
 - event-driven architecture
 - queue isolation
+- reliability engineering with MTBF, MTTR, queue-age, backlog, and recovery metrics
 - Java concurrency and functional programming
 - Spring Boot business APIs
 - optimistic concurrency
