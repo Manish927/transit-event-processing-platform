@@ -17,11 +17,16 @@ import com.transit.ticketing.simulator.generator.TapDecisionEventGenerator;
 import com.transit.ticketing.simulator.generator.TapEventGenerator;
 import com.transit.ticketing.simulator.publisher.ConsoleEventPublisher;
 import com.transit.ticketing.simulator.publisher.EventPublisher;
+import com.transit.ticketing.simulator.publisher.HttpEventPublisher;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Random;
 
 public final class DeviceSimulatorApplication {
+
+    private static final String PUBLISHER_ENV = "SIMULATOR_PUBLISHER";
+    private static final String API_ENDPOINT_ENV = "TRANSIT_EVENT_API_ENDPOINT";
 
     private DeviceSimulatorApplication() {
     }
@@ -44,16 +49,17 @@ public final class DeviceSimulatorApplication {
         HeartbeatEventGenerator heartbeatGenerator =
                 new HeartbeatEventGenerator();
 
-        EventPublisher publisher = new ConsoleEventPublisher();
+        EventPublisher publisher = createPublisher();
         Random random = new Random();
 
         System.err.printf(
-                "Starting simulator: devices=%d passengers=%d taps=%d heartbeatEvery=%d rejectionRate=%.4f%n",
+                "Starting simulator: devices=%d passengers=%d taps=%d heartbeatEvery=%d rejectionRate=%.4f publisher=%s%n",
                 properties.deviceCount(),
                 properties.passengerCount(),
                 properties.totalTaps(),
                 properties.heartbeatEveryTaps(),
-                properties.rejectionRate());
+                properties.rejectionRate(),
+                publisher.getClass().getSimpleName());
 
         for (int i = 0; i < properties.totalTaps(); i++) {
             SimulatedDevice device = devices.get(i % devices.size());
@@ -146,6 +152,35 @@ public final class DeviceSimulatorApplication {
         }
 
         System.err.println("Simulation complete.");
+    }
+
+    private static EventPublisher createPublisher() {
+        String mode = System.getenv()
+                .getOrDefault(PUBLISHER_ENV, "console")
+                .trim()
+                .toLowerCase(Locale.ROOT);
+
+        return switch (mode) {
+            case "console" -> new ConsoleEventPublisher();
+
+            case "http" -> new HttpEventPublisher(
+                    requiredEnvironmentVariable(API_ENDPOINT_ENV));
+
+            default -> throw new IllegalArgumentException(
+                    "Unsupported " + PUBLISHER_ENV + " value: " + mode
+                            + ". Expected 'console' or 'http'.");
+        };
+    }
+
+    private static String requiredEnvironmentVariable(String name) {
+        String value = System.getenv(name);
+
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException(
+                    "Missing required environment variable: " + name);
+        }
+
+        return value.trim();
     }
 
     private static TapRejectionReason randomRejectionReason(
