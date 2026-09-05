@@ -9,186 +9,116 @@ import com.transit.ticketing.ingestion.publisher.EventPublisher;
 import com.transit.ticketing.ingestion.publisher.SqsEventPublisher;
 import com.transit.ticketing.ingestion.validation.EventValidationException;
 import com.transit.ticketing.ingestion.validation.EventValidator;
+import software.amazon.awssdk.http.crt.AwsCrtHttpClient;
 import software.amazon.awssdk.services.sqs.SqsClient;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Map;
+import java.util.Objects;
 
 public final class IngestionLambdaHandler
-        implements RequestHandler<
-        APIGatewayV2HTTPEvent,
-        APIGatewayV2HTTPResponse> {
+        implements RequestHandler<APIGatewayV2HTTPEvent, APIGatewayV2HTTPResponse> {
 
-    private static final EventValidator VALIDATOR =
-            new EventValidator();
+    private static final Map<String, String> RESPONSE_HEADERS = Map.of(
+            "Content-Type", "application/json",
+            "X-Content-Type-Options", "nosniff"
+    );
+
+    // Reuse thread-safe, heavy instances across cold starts
+    private static final EventValidator VALIDATOR = new EventValidator();
 
     private final EventPublisher publisher;
 
-    /*
-     * AWS Lambda uses this constructor.
-     * The SQS client is created once per Lambda execution environment
-     * and reused by warm invocations.
+    /**
+     * AWS Lambda default constructor using optimized CRT HTTP client.
      */
     public IngestionLambdaHandler() {
         this(new SqsEventPublisher(
-                SqsClient.create(),
+                SqsClient.builder()
+                        .httpClientBuilder(AwsCrtHttpClient.builder())
+                        .build(),
                 requiredEnvironmentVariable("EVENT_QUEUE_URL")));
     }
 
-    /*
-     * Visible for unit tests.
+    /**
+     * Package-private constructor for dependency injection in unit tests.
      */
     IngestionLambdaHandler(EventPublisher publisher) {
-        this.publisher = publisher;
+        this.publisher = Objects.requireNonNull(publisher, "EventPublisher must not be null");
     }
 
     @Override
-    public APIGatewayV2HTTPResponse handleRequest(
-            APIGatewayV2HTTPEvent request,
-            Context context) {
-
-        if (request == null
-                || request.getBody() == null
-                || request.getBody().isBlank()) {
-
-            log(context, "Rejected request: empty body");
-
-            return response(
-                    400,
-                    """
-                    {"status":"REJECTED","code":"EMPTY_BODY"}
-                    """);
+    public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent request, Context context) {
+        if (request == null || isNullOrBlank(request.getBody())) {
+            log(context, "WARN", "Rejected request: empty body");
+            return buildResponse(400, "{\"status\":\"REJECTED\",\"code\":\"EMPTY_BODY\"}");
         }
 
         final String rawEvent;
-
         try {
             rawEvent = decodeBody(request);
-        } catch (IllegalArgumentException exception) {
-            log(context, "Rejected request: invalid Base64 body");
-
-            return response(
-                    400,
-                    """
-                    {"status":"REJECTED","code":"INVALID_BODY_ENCODING"}
-                    """);
+        } catch (IllegalArgumentException e) {
+            log(context, "WARN", "Rejected request: invalid Base64 body");
+            return buildResponse(400, "{\"status\":\"REJECTED\",\"code\":\"INVALID_BODY_ENCODING\"}");
         }
 
         try {
-            EventEnvelope<?> event =
-                    VALIDATOR.validate(rawEvent);
+            EventEnvelope<?> event = VALIDATOR.validate(rawEvent);
+            String sqsMessageId = publisher.publish(rawEvent, event.header());
 
-            String sqsMessageId =
-                    publisher.publish(
-                            rawEvent,
-                            event.header());
+            log(context, "INFO", String.format(
+                    "Accepted eventId=%s eventType=%s sqsMessageId=%s",
+                    event.header().eventId(),
+                    event.header().eventType(),
+                    sqsMessageId));
 
-            log(
-                    context,
-                    "Accepted eventId=%s eventType=%s sqsMessageId=%s"
-                            .formatted(
-                                    event.header().eventId(),
-                                    event.header().eventType(),
-                                    sqsMessageId));
+            return buildResponse(202, String.format("{\"status\":\"ACCEPTED\",\"eventId\":\"%s\"}", event.header().eventId()));
 
-            return response(
-                    202,
-                    """
-                    {"status":"ACCEPTED","eventId":"%s"}
-                    """.formatted(event.header().eventId()).trim());
+        } catch (EventValidationException e) {
+            log(context, "WARN", "Rejected event validation failure: " + e.getMessage());
+            return buildResponse(400, "{\"status\":\"REJECTED\",\"code\":\"INVALID_EVENT\"}");
 
-        } catch (EventValidationException exception) {
+        } catch (Exception e) {
+            log(context, "ERROR", String.format("Ingestion failure [%s]: %s",
+                    e.getClass().getSimpleName(), e.getMessage()));
 
-            log(
-                    context,
-                    "Rejected event: " + exception.getMessage());
-
-            return response(
-                    400,
-                    """
-                    {"status":"REJECTED","code":"INVALID_EVENT"}
-                    """);
-
-        } catch (Exception exception) {
-
-            /*
-             * Do not expose AWS/internal exception details to callers.
-             * CloudWatch contains the diagnostic information.
-             */
-            log(
-                    context,
-                    "Ingestion failure: "
-                            + exception.getClass().getSimpleName()
-                            + ": "
-                            + exception.getMessage());
-
-            return response(
-                    503,
-                    """
-                    {"status":"FAILED","code":"INGESTION_UNAVAILABLE"}
-                    """);
+            return buildResponse(503, "{\"status\":\"FAILED\",\"code\":\"INGESTION_UNAVAILABLE\"}");
         }
     }
 
-    private static String decodeBody(
-            APIGatewayV2HTTPEvent request) {
-
-        if (!Boolean.TRUE.equals(
-                request.getIsBase64Encoded())) {
-
+    private static String decodeBody(APIGatewayV2HTTPEvent request) {
+        if (!Boolean.TRUE.equals(request.getIsBase64Encoded())) {
             return request.getBody();
         }
-
-        byte[] decoded =
-                Base64.getDecoder()
-                        .decode(request.getBody());
-
-        return new String(
-                decoded,
-                StandardCharsets.UTF_8);
+        byte[] decoded = Base64.getDecoder().decode(request.getBody());
+        return new String(decoded, StandardCharsets.UTF_8);
     }
 
-    private static APIGatewayV2HTTPResponse response(
-            int statusCode,
-            String body) {
-
-        APIGatewayV2HTTPResponse response =
-                new APIGatewayV2HTTPResponse();
-
-        response.setStatusCode(statusCode);
-        response.setHeaders(
-                Map.of(
-                        "content-type",
-                        "application/json"));
-        response.setBody(body.trim());
-        response.setIsBase64Encoded(false);
-
-        return response;
+    private static APIGatewayV2HTTPResponse buildResponse(int statusCode, String jsonBody) {
+        return APIGatewayV2HTTPResponse.builder()
+                .withStatusCode(statusCode)
+                .withHeaders(RESPONSE_HEADERS)
+                .withBody(jsonBody)
+                .withIsBase64Encoded(false)
+                .build();
     }
 
-    private static String requiredEnvironmentVariable(
-            String name) {
+    private static boolean isNullOrBlank(String str) {
+        return str == null || str.isBlank();
+    }
 
+    private static String requiredEnvironmentVariable(String name) {
         String value = System.getenv(name);
-
-        if (value == null || value.isBlank()) {
-            throw new IllegalStateException(
-                    "Missing required environment variable: "
-                            + name);
+        if (isNullOrBlank(value)) {
+            throw new IllegalStateException("Missing required environment variable: " + name);
         }
-
         return value;
     }
 
-    private static void log(
-            Context context,
-            String message) {
-
-        if (context != null
-                && context.getLogger() != null) {
-
-            context.getLogger().log(message + System.lineSeparator());
+    private static void log(Context context, String level, String message) {
+        if (context != null && context.getLogger() != null) {
+            context.getLogger().log(String.format("[%s] %s%n", level, message));
         }
     }
 }
