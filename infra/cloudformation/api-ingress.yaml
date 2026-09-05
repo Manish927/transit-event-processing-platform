@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: HTTP API ingress for Transit Event Processing Platform with direct SQS integrations
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: transit-event
+    AllowedPattern: '[a-z0-9-]+'
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+
+  FareEventQueueUrl:
+    Type: String
+    Description: URL of the existing fare/event SQS queue
+
+  FareEventQueueArn:
+    Type: String
+    Description: ARN of the existing fare/event SQS queue
+
+  DeviceEventQueueUrl:
+    Type: String
+    Description: URL of the device-event SQS queue
+
+  DeviceEventQueueArn:
+    Type: String
+    Description: ARN of the device-event SQS queue
+
+Resources:
+  ApiGatewaySqsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Allows API Gateway HTTP API to publish transit events to SQS
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: SendTransitEventsToSqs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SendTransitEvents
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource:
+                  - !Ref FareEventQueueArn
+                  - !Ref DeviceEventQueueArn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  TransitEventHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-event-ingress'
+      Description: Direct HTTP API ingress for fare and device events
+      ProtocolType: HTTP
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+
+  FareSqsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref TransitEventHttpApi
+      Description: Publish fare events directly to SQS
+      IntegrationType: AWS_PROXY
+      IntegrationSubtype: SQS-SendMessage
+      CredentialsArn: !GetAtt ApiGatewaySqsRole.Arn
+      PayloadFormatVersion: '1.0'
+      TimeoutInMillis: 10000
+      RequestParameters:
+        QueueUrl: !Ref FareEventQueueUrl
+        MessageBody: '$request.body'
+      ResponseParameters:
+        '200':
+          ResponseParameters:
+            - Source: '202'
+              Destination: 'overwrite:statuscode'
+
+  DeviceSqsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref TransitEventHttpApi
+      Description: Publish device events directly to SQS
+      IntegrationType: AWS_PROXY
+      IntegrationSubtype: SQS-SendMessage
+      CredentialsArn: !GetAtt ApiGatewaySqsRole.Arn
+      PayloadFormatVersion: '1.0'
+      TimeoutInMillis: 10000
+      RequestParameters:
+        QueueUrl: !Ref DeviceEventQueueUrl
+        MessageBody: '$request.body'
+      ResponseParameters:
+        '200':
+          ResponseParameters:
+            - Source: '202'
+              Destination: 'overwrite:statuscode'
+
+  FareRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref TransitEventHttpApi
+      RouteKey: 'POST /events/fare'
+      Target: !Sub 'integrations/${FareSqsIntegration}'
+
+  DeviceRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref TransitEventHttpApi
+      RouteKey: 'POST /events/device'
+      Target: !Sub 'integrations/${DeviceSqsIntegration}'
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref TransitEventHttpApi
+      StageName: '$default'
+      AutoDeploy: true
+      Tags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+
+Outputs:
+  EventIngressApiId:
+    Description: HTTP API identifier
+    Value: !Ref TransitEventHttpApi
+
+  EventIngressApiEndpoint:
+    Description: Base URL of the event-ingress HTTP API
+    Value: !GetAtt TransitEventHttpApi.ApiEndpoint
+
+  FareEventsPath:
+    Description: Fare-event route
+    Value: '/events/fare'
+
+  DeviceEventsPath:
+    Description: Device-event route
+    Value: '/events/device'
