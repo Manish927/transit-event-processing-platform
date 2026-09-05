@@ -2,7 +2,7 @@
 
 A hands-on Java 21 / AWS reference platform for high-volume public-transit fare and device-event ingestion, asynchronous processing, idempotency, backpressure, queue isolation, transactional processing, and later stream analytics with Kinesis and Apache Flink.
 
-The project is being built incrementally as a production-style, resilient event-processing architecture.
+The project is being built incrementally as a production-style architecture implementation.
 
 ---
 
