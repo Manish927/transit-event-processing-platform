@@ -28,6 +28,10 @@ public final class HttpEventPublisher implements EventPublisher {
     private static final String FARE_EVENTS_PATH = "/events/fare";
     private static final String DEVICE_EVENTS_PATH = "/events/device";
 
+    private static final String EVENT_ID_HEADER = "X-Event-Id";
+    private static final String CORRELATION_ID_HEADER = "X-Correlation-Id";
+    private static final String API_GATEWAY_REQUEST_ID_HEADER = "x-amzn-requestid";
+
     private static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(3);
     private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(5);
 
@@ -60,6 +64,11 @@ public final class HttpEventPublisher implements EventPublisher {
         Objects.requireNonNull(event.header(), "event.header must not be null");
 
         String eventType = String.valueOf(event.header().eventType());
+        String eventId = String.valueOf(event.header().eventId());
+        String correlationId = event.header().correlationId() == null
+                ? eventId
+                : String.valueOf(event.header().correlationId());
+
         String path = resolvePath(eventType);
         URI target = URI.create(baseEndpoint + path);
         String json = EventJson.toJson(event);
@@ -68,6 +77,8 @@ public final class HttpEventPublisher implements EventPublisher {
                 .timeout(requestTimeout)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
+                .header(EVENT_ID_HEADER, eventId)
+                .header(CORRELATION_ID_HEADER, correlationId)
                 .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
                 .build();
 
@@ -81,22 +92,31 @@ public final class HttpEventPublisher implements EventPublisher {
             throw e;
         }
 
+        String apiRequestId = response.headers()
+                .firstValue(API_GATEWAY_REQUEST_ID_HEADER)
+                .orElse("-");
+
         if (response.statusCode() != 202) {
             throw new IOException(
-                    "Event publish failed: eventId=%s eventType=%s status=%d body=%s"
+                    "Event publish failed: eventId=%s correlationId=%s eventType=%s route=%s status=%d apiRequestId=%s body=%s"
                             .formatted(
-                                    event.header().eventId(),
+                                    eventId,
+                                    correlationId,
                                     eventType,
+                                    path,
                                     response.statusCode(),
+                                    apiRequestId,
                                     abbreviate(response.body(), 500)));
         }
 
         System.err.printf(
-                "Published eventId=%s eventType=%s route=%s status=%d%n",
-                event.header().eventId(),
+                "Published eventId=%s correlationId=%s eventType=%s route=%s status=%d apiRequestId=%s%n",
+                eventId,
+                correlationId,
                 eventType,
                 path,
-                response.statusCode());
+                response.statusCode(),
+                apiRequestId);
     }
 
     private static String resolvePath(String eventType) {

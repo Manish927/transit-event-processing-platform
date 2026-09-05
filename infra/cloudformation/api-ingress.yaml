@@ -83,6 +83,8 @@ Resources:
       RequestParameters:
         QueueUrl: !Ref FareEventQueueUrl
         MessageBody: '$request.body'
+        MessageAttributes: >-
+          {"eventId":{"DataType":"String","StringValue":"${request.header.x-event-id}"},"correlationId":{"DataType":"String","StringValue":"${request.header.x-correlation-id}"},"apiRequestId":{"DataType":"String","StringValue":"${context.requestId}"}}
       ResponseParameters:
         '200':
           ResponseParameters:
@@ -102,6 +104,8 @@ Resources:
       RequestParameters:
         QueueUrl: !Ref DeviceEventQueueUrl
         MessageBody: '$request.body'
+        MessageAttributes: >-
+          {"eventId":{"DataType":"String","StringValue":"${request.header.x-event-id}"},"correlationId":{"DataType":"String","StringValue":"${request.header.x-correlation-id}"},"apiRequestId":{"DataType":"String","StringValue":"${context.requestId}"}}
       ResponseParameters:
         '200':
           ResponseParameters:
