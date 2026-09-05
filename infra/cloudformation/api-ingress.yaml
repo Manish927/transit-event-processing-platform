@@ -122,12 +122,29 @@ Resources:
       RouteKey: 'POST /events/device'
       Target: !Sub 'integrations/${DeviceSqsIntegration}'
 
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${ProjectName}-${Environment}-event-ingress-access'
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
   DefaultStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
       ApiId: !Ref TransitEventHttpApi
       StageName: '$default'
       AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","extendedRequestId":"$context.extendedRequestId","requestTime":"$context.requestTime","requestTimeEpoch":"$context.requestTimeEpoch","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","path":"$context.path","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength","responseLatency":"$context.responseLatency","integrationStatus":"$context.integration.status","integrationLatency":"$context.integration.latency","integrationRequestId":"$context.integration.requestId","integrationError":"$context.integration.error","sourceIp":"$context.identity.sourceIp","userAgent":"$context.identity.userAgent"}
       Tags:
         Project: !Ref ProjectName
         Environment: !Ref Environment
@@ -148,3 +165,11 @@ Outputs:
   DeviceEventsPath:
     Description: Device-event route
     Value: '/events/device'
+
+  ApiAccessLogGroupName:
+    Description: CloudWatch Logs group containing HTTP API access logs
+    Value: !Ref ApiAccessLogGroup
+
+  ApiAccessLogGroupArn:
+    Description: ARN of the HTTP API access log group
+    Value: !GetAtt ApiAccessLogGroup.Arn
