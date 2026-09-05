@@ -1,0 +1,141 @@
+name: Deploy API Ingress
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/cloudformation/api-ingress.yaml'
+      - '.github/workflows/deploy-api-ingress.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: transit-api-ingress-deployment
+  cancel-in-progress: false
+
+env:
+  PROJECT_NAME: transit-event
+  ENVIRONMENT: dev
+  FOUNDATION_STACK: transit-event-dev
+  API_INGRESS_STACK: transit-event-dev-api-ingress
+
+jobs:
+  deploy:
+    name: Deploy API Ingress
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Validate API ingress template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infra/cloudformation/api-ingress.yaml
+
+      - name: Resolve queue outputs
+        run: |
+          FARE_EVENT_QUEUE_URL=$(aws cloudformation describe-stacks \
+            --stack-name "${FOUNDATION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='EventQueueUrl'].OutputValue | [0]" \
+            --output text)
+
+          FARE_EVENT_QUEUE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "${FOUNDATION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='EventQueueArn'].OutputValue | [0]" \
+            --output text)
+
+          DEVICE_EVENT_QUEUE_URL=$(aws cloudformation describe-stacks \
+            --stack-name "${FOUNDATION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='DeviceEventQueueUrl'].OutputValue | [0]" \
+            --output text)
+
+          DEVICE_EVENT_QUEUE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "${FOUNDATION_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='DeviceEventQueueArn'].OutputValue | [0]" \
+            --output text)
+
+          for value in \
+            "${FARE_EVENT_QUEUE_URL}" \
+            "${FARE_EVENT_QUEUE_ARN}" \
+            "${DEVICE_EVENT_QUEUE_URL}" \
+            "${DEVICE_EVENT_QUEUE_ARN}"; do
+            if [ -z "${value}" ] || [ "${value}" = "None" ]; then
+              echo "Unable to resolve one or more queue outputs from ${FOUNDATION_STACK}."
+              exit 1
+            fi
+          done
+
+          echo "FARE_EVENT_QUEUE_URL=${FARE_EVENT_QUEUE_URL}" >> "${GITHUB_ENV}"
+          echo "FARE_EVENT_QUEUE_ARN=${FARE_EVENT_QUEUE_ARN}" >> "${GITHUB_ENV}"
+          echo "DEVICE_EVENT_QUEUE_URL=${DEVICE_EVENT_QUEUE_URL}" >> "${GITHUB_ENV}"
+          echo "DEVICE_EVENT_QUEUE_ARN=${DEVICE_EVENT_QUEUE_ARN}" >> "${GITHUB_ENV}"
+
+          echo "Resolved fare and device queue URLs/ARNs from ${FOUNDATION_STACK}."
+
+      - name: Deploy API ingress
+        run: |
+          aws cloudformation deploy \
+            --stack-name "${API_INGRESS_STACK}" \
+            --template-file infra/cloudformation/api-ingress.yaml \
+            --parameter-overrides \
+              ProjectName="${PROJECT_NAME}" \
+              Environment="${ENVIRONMENT}" \
+              FareEventQueueUrl="${FARE_EVENT_QUEUE_URL}" \
+              FareEventQueueArn="${FARE_EVENT_QUEUE_ARN}" \
+              DeviceEventQueueUrl="${DEVICE_EVENT_QUEUE_URL}" \
+              DeviceEventQueueArn="${DEVICE_EVENT_QUEUE_ARN}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --role-arn "${{ vars.CFN_EXECUTION_ROLE_ARN }}" \
+            --no-fail-on-empty-changeset
+
+      - name: Verify API ingress stack
+        run: |
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${API_INGRESS_STACK}" \
+            --query "Stacks[0].StackStatus" \
+            --output text)
+
+          API_ID=$(aws cloudformation describe-stacks \
+            --stack-name "${API_INGRESS_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='EventIngressApiId'].OutputValue | [0]" \
+            --output text)
+
+          API_ENDPOINT=$(aws cloudformation describe-stacks \
+            --stack-name "${API_INGRESS_STACK}" \
+            --query "Stacks[0].Outputs[?OutputKey=='EventIngressApiEndpoint'].OutputValue | [0]" \
+            --output text)
+
+          if [ "${STACK_STATUS}" != "CREATE_COMPLETE" ] && [ "${STACK_STATUS}" != "UPDATE_COMPLETE" ]; then
+            echo "Unexpected API ingress stack status: ${STACK_STATUS}"
+            exit 1
+          fi
+
+          if [ -z "${API_ID}" ] || [ "${API_ID}" = "None" ]; then
+            echo "Unable to resolve EventIngressApiId."
+            exit 1
+          fi
+
+          if [ -z "${API_ENDPOINT}" ] || [ "${API_ENDPOINT}" = "None" ]; then
+            echo "Unable to resolve EventIngressApiEndpoint."
+            exit 1
+          fi
+
+          echo "API ingress stack status: ${STACK_STATUS}"
+          echo "API ID: ${API_ID}"
+          echo "API endpoint: ${API_ENDPOINT}"
+          echo "Fare endpoint: ${API_ENDPOINT}/events/fare"
+          echo "Device endpoint: ${API_ENDPOINT}/events/device"
